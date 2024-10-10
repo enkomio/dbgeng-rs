@@ -60,7 +60,7 @@ impl DebugInstruction {
 }
 
 pub trait EventCallbacks {
-    fn breakpoint(&self, client: &DebugClient, bp: &DebugBreakpoint) -> DebugInstruction;
+    fn breakpoint(&self, _client: &DebugClient, _bp: &DebugBreakpoint) -> DebugInstruction { DebugInstruction::NoChange }
 }
 
 #[implement(IDebugEventCallbacks)]

@@ -32,12 +32,11 @@ pub enum BreakpointType {
 ///
 /// Typically to setup a breakpoint, you will want to set the offset
 /// or offset expression and then set the `BreakpointFlags::ENABLED` flag.
-pub struct DebugBreakpoint(IDebugBreakpoint3);
+pub struct DebugBreakpoint(pub IDebugBreakpoint3);
 
 impl DebugBreakpoint {
     pub fn new<I: Into<IUnknown>>(bp: I) -> Result<Self> {
         let bp = bp.into().cast()?;
-
         Ok(Self(bp))
     }
 

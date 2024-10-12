@@ -60,7 +60,7 @@ impl DebugInstruction {
 }
 
 pub trait EventCallbacks {
-    fn breakpoint(&self, _client: &DebugClient, _bp: &DebugBreakpoint) -> DebugInstruction { DebugInstruction::NoChange }
+    fn breakpoint(&self, _client: &DebugClient, _bp: &DebugBreakpoint) -> DebugInstruction;
 }
 
 #[implement(IDebugEventCallbacks)]
@@ -118,7 +118,8 @@ impl IDebugEventCallbacks_Impl for DbgEventCallbacks {
         _exception: *const EXCEPTION_RECORD64,
         _firstchance: u32,
     ) -> windows::core::Result<()> {
-        todo!()
+        let _ = dlogln!(self.client, "Event: Exception");
+        Ok(())
     }
 
     fn CreateThread(
@@ -127,11 +128,13 @@ impl IDebugEventCallbacks_Impl for DbgEventCallbacks {
         _dataoffset: u64,
         _startoffset: u64,
     ) -> windows::core::Result<()> {
-        todo!()
+        let _ = dlogln!(self.client, "Event: CreateThread");
+        Ok(())
     }
 
     fn ExitThread(&self, _exitcode: u32) -> windows::core::Result<()> {
-        todo!()
+        let _ = dlogln!(self.client, "Event: ExitThreat");
+        Ok(())
     }
 
     fn CreateProcessA(
@@ -148,11 +151,13 @@ impl IDebugEventCallbacks_Impl for DbgEventCallbacks {
         _threaddataoffset: u64,
         _startoffset: u64,
     ) -> windows::core::Result<()> {
-        todo!()
+        let _ = dlogln!(self.client, "Event: CreateProcessA");
+        Ok(())
     }
 
     fn ExitProcess(&self, _exitcode: u32) -> windows::core::Result<()> {
-        todo!()
+        let _ = dlogln!(self.client, "Event: ExitProcess");
+        Ok(())
     }
 
     fn LoadModule(
@@ -165,7 +170,8 @@ impl IDebugEventCallbacks_Impl for DbgEventCallbacks {
         _checksum: u32,
         _timedatestamp: u32,
     ) -> windows::core::Result<()> {
-        todo!()
+        let _ = dlogln!(self.client, "Event: LoadModule");
+        Ok(())
     }
 
     fn UnloadModule(
@@ -173,26 +179,32 @@ impl IDebugEventCallbacks_Impl for DbgEventCallbacks {
         _imagebasename: &windows::core::PCSTR,
         _baseoffset: u64,
     ) -> windows::core::Result<()> {
-        todo!()
+        let _ = dlogln!(self.client, "Event: UnloadModule");
+        Ok(())
     }
 
     fn SystemError(&self, _error: u32, _level: u32) -> windows::core::Result<()> {
-        todo!()
+        let _ = dlogln!(self.client, "Event: SystemError");
+        Ok(())
     }
 
     fn SessionStatus(&self, _status: u32) -> windows::core::Result<()> {
-        todo!()
+        let _ = dlogln!(self.client, "Event: SessionStatus");
+        Ok(())
     }
 
     fn ChangeDebuggeeState(&self, _flags: u32, _argument: u64) -> windows::core::Result<()> {
-        todo!()
+        let _ = dlogln!(self.client, "Event: ChangeDebuggeeState");
+        Ok(())
     }
 
     fn ChangeEngineState(&self, _flags: u32, _argument: u64) -> windows::core::Result<()> {
-        todo!()
+        let _ = dlogln!(self.client, "Event: ChangeEngineState");
+        Ok(())
     }
 
     fn ChangeSymbolState(&self, _flags: u32, _argument: u64) -> windows::core::Result<()> {
-        todo!()
+        let _ = dlogln!(self.client, "Event: ChangeSymbolState");
+        Ok(())
     }
 }

@@ -4,17 +4,12 @@
 use std::collections::HashMap;
 use std::ffi::CString;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Context, Ok, Result};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use windows::core::{IUnknown, Interface};
 use windows::Win32::System::Diagnostics::Debug::Extensions::{
-    DebugCreate, IDebugClient8, IDebugControl4, IDebugDataSpaces4, IDebugEventCallbacks,
-    IDebugRegisters, IDebugSymbols3, DEBUG_ANY_ID, DEBUG_BREAKPOINT_CODE, DEBUG_BREAKPOINT_DATA,
-    DEBUG_EXECUTE_DEFAULT, DEBUG_OUTCTL_ALL_CLIENTS, DEBUG_OUTPUT_NORMAL, DEBUG_STACK_FRAME,
-    DEBUG_VALUE, DEBUG_VALUE_FLOAT128, DEBUG_VALUE_FLOAT32, DEBUG_VALUE_FLOAT64,
-    DEBUG_VALUE_FLOAT80, DEBUG_VALUE_INT16, DEBUG_VALUE_INT32, DEBUG_VALUE_INT64, DEBUG_VALUE_INT8,
-    DEBUG_VALUE_VECTOR128, DEBUG_VALUE_VECTOR64,
+    DebugCreate, IDebugBreakpoint, IDebugClient8, IDebugControl4, IDebugDataSpaces4, IDebugEventCallbacks, IDebugRegisters, IDebugSymbols3, DEBUG_ANY_ID, DEBUG_BREAKPOINT_CODE, DEBUG_BREAKPOINT_DATA, DEBUG_EXECUTE_DEFAULT, DEBUG_OUTCTL_ALL_CLIENTS, DEBUG_OUTPUT_NORMAL, DEBUG_STACK_FRAME, DEBUG_VALUE, DEBUG_VALUE_FLOAT128, DEBUG_VALUE_FLOAT32, DEBUG_VALUE_FLOAT64, DEBUG_VALUE_FLOAT80, DEBUG_VALUE_INT16, DEBUG_VALUE_INT32, DEBUG_VALUE_INT64, DEBUG_VALUE_INT8, DEBUG_VALUE_VECTOR128, DEBUG_VALUE_VECTOR64
 };
 use windows::Win32::System::SystemInformation::IMAGE_FILE_MACHINE;
 
@@ -254,10 +249,22 @@ impl DebugClient {
             )
         }
         .context("AddBreakpoint failed")?;
-
         DebugBreakpoint::new(bp)
     }
 
+    /// Remove a previously created breakpoint.
+    pub fn remove_breakpoint(
+        &self,
+        bp: DebugBreakpoint
+    ) -> Result<()> {        
+        unsafe { 
+            let i: IUnknown = bp.0.into();
+            self.control.RemoveBreakpoint(&i.cast::<IDebugBreakpoint>().unwrap()) 
+            .context("RemoveBreakpoint failed")?;
+        };
+        Ok(())
+    }
+    
     /// Get the register indices from names.
     pub fn reg_indices(&self, names: &[&str]) -> Result<Vec<u32>> {
         let mut indices = Vec::with_capacity(names.len());

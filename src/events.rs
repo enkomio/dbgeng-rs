@@ -2,14 +2,16 @@ use std::panic::AssertUnwindSafe;
 
 use windows::core::{implement, HRESULT};
 use windows::Win32::System::Diagnostics::Debug::Extensions::{
-    IDebugBreakpoint, IDebugEventCallbacks, IDebugEventCallbacks_Impl, DEBUG_EVENT_BREAKPOINT,
-    DEBUG_STATUS_BREAK, DEBUG_STATUS_GO, DEBUG_STATUS_GO_HANDLED, DEBUG_STATUS_GO_NOT_HANDLED,
-    DEBUG_STATUS_IGNORE_EVENT, DEBUG_STATUS_NO_CHANGE, DEBUG_STATUS_RESTART_REQUESTED,
-    DEBUG_STATUS_STEP_BRANCH, DEBUG_STATUS_STEP_INTO, DEBUG_STATUS_STEP_OVER,
+    IDebugBreakpoint, IDebugEventCallbacks, IDebugEventCallbacks_Impl, 
+    DEBUG_EVENT_BREAKPOINT, DEBUG_EVENT_EXCEPTION, 
+    DEBUG_STATUS_BREAK, DEBUG_STATUS_GO, DEBUG_STATUS_GO_HANDLED, DEBUG_STATUS_GO_NOT_HANDLED, 
+    DEBUG_STATUS_IGNORE_EVENT, DEBUG_STATUS_NO_CHANGE, DEBUG_STATUS_RESTART_REQUESTED, 
+    DEBUG_STATUS_STEP_BRANCH, DEBUG_STATUS_STEP_INTO, DEBUG_STATUS_STEP_OVER
 };
 use windows::Win32::System::Diagnostics::Debug::EXCEPTION_RECORD64;
 
 use crate::breakpoint::DebugBreakpoint;
+use crate::exception::ExceptionInfo;
 use crate::client::DebugClient;
 use crate::dlogln;
 
@@ -61,6 +63,7 @@ impl DebugInstruction {
 
 pub trait EventCallbacks {
     fn breakpoint(&self, _client: &DebugClient, _bp: &DebugBreakpoint) -> DebugInstruction;
+    fn exception(&self, _client: &DebugClient, _ei: &ExceptionInfo) -> DebugInstruction;
 }
 
 #[implement(IDebugEventCallbacks)]
@@ -77,8 +80,10 @@ impl DbgEventCallbacks {
 
 impl IDebugEventCallbacks_Impl for DbgEventCallbacks {
     fn GetInterestMask(&self) -> windows::core::Result<u32> {
-        // TODO...
-        Ok(DEBUG_EVENT_BREAKPOINT)
+        Ok(
+            DEBUG_EVENT_BREAKPOINT | 
+            DEBUG_EVENT_EXCEPTION
+        )
     }
 
     fn Breakpoint(
@@ -115,11 +120,34 @@ impl IDebugEventCallbacks_Impl for DbgEventCallbacks {
 
     fn Exception(
         &self,
-        _exception: *const EXCEPTION_RECORD64,
-        _firstchance: u32,
-    ) -> windows::core::Result<()> {
-        let _ = dlogln!(self.client, "Event: Exception");
-        Ok(())
+        exception: *const EXCEPTION_RECORD64,
+        firstchance: u32,
+    ) -> windows::core::Result<()> {     
+        let exception_info = ExceptionInfo {
+            record: unsafe { exception.read().into() },
+            first_chance: firstchance
+        };
+       
+        let res = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            self.callbacks
+                .exception(&self.client, &exception_info)
+        }));
+
+        let res = match res {
+            Ok(i) => i,
+            Err(panic) => {
+                // If the callback panics, we'll just ignore it and continue.
+                let _ = dlogln!(self.client, "panic in exception callback: {:?}", panic);
+                DebugInstruction::GoNotHandled
+            }
+        };
+
+        // N.B: This is pretty lame; the API is declared to return a HRESULT, but it
+        // does not actually return a HRESULT. We'll need to shim our return
+        // value into a HRESULT-looking thing. Ok(_) maps to 0, and Err(e) maps
+        // to e.code(). So we'll always return an "error".
+        let res = HRESULT(res.as_status() as i32);
+        Err(res.into())
     }
 
     fn CreateThread(
@@ -199,7 +227,7 @@ impl IDebugEventCallbacks_Impl for DbgEventCallbacks {
     }
 
     fn ChangeEngineState(&self, _flags: u32, _argument: u64) -> windows::core::Result<()> {
-        let _ = dlogln!(self.client, "Event: ChangeEngineState");
+        let _ = dlogln!(self.client, "Event: ChangeEngineState. Flags: 0x{:x}, Arguments: 0x{:x}", _flags, _argument);
         Ok(())
     }
 

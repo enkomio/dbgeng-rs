@@ -9,7 +9,13 @@ use anyhow::{bail, Context, Ok, Result};
 use serde::{Deserialize, Serialize};
 use windows::core::{IUnknown, Interface};
 use windows::Win32::System::Diagnostics::Debug::Extensions::{
-    DebugCreate, IDebugBreakpoint, IDebugClient8, IDebugControl4, IDebugDataSpaces4, IDebugEventCallbacks, IDebugRegisters, IDebugSymbols3, DEBUG_ANY_ID, DEBUG_BREAKPOINT_CODE, DEBUG_BREAKPOINT_DATA, DEBUG_EXECUTE_DEFAULT, DEBUG_OUTCTL_ALL_CLIENTS, DEBUG_OUTPUT_NORMAL, DEBUG_STACK_FRAME, DEBUG_VALUE, DEBUG_VALUE_FLOAT128, DEBUG_VALUE_FLOAT32, DEBUG_VALUE_FLOAT64, DEBUG_VALUE_FLOAT80, DEBUG_VALUE_INT16, DEBUG_VALUE_INT32, DEBUG_VALUE_INT64, DEBUG_VALUE_INT8, DEBUG_VALUE_VECTOR128, DEBUG_VALUE_VECTOR64
+    DebugCreate, IDebugBreakpoint, IDebugClient8, IDebugControl4, IDebugDataSpaces4, IDebugEventCallbacks, 
+    IDebugRegisters, IDebugSymbols3, IDebugSystemObjects4, 
+    DEBUG_ANY_ID, DEBUG_BREAKPOINT_CODE, DEBUG_BREAKPOINT_DATA, DEBUG_EXECUTE_DEFAULT, 
+    DEBUG_OUTCTL_ALL_CLIENTS, DEBUG_OUTPUT_NORMAL, DEBUG_STACK_FRAME, DEBUG_VALUE, 
+    DEBUG_VALUE_FLOAT128, DEBUG_VALUE_FLOAT32, DEBUG_VALUE_FLOAT64, DEBUG_VALUE_FLOAT80, 
+    DEBUG_VALUE_INT16, DEBUG_VALUE_INT32, DEBUG_VALUE_INT64, DEBUG_VALUE_INT8, 
+    DEBUG_VALUE_VECTOR128, DEBUG_VALUE_VECTOR64
 };
 use windows::Win32::System::SystemInformation::IMAGE_FILE_MACHINE;
 
@@ -128,6 +134,7 @@ pub struct DebugClient {
     registers: IDebugRegisters,
     dataspaces: IDebugDataSpaces4,
     symbols: IDebugSymbols3,
+    system: IDebugSystemObjects4,
 }
 
 impl DebugClient {
@@ -136,14 +143,16 @@ impl DebugClient {
         let registers = client.cast()?;
         let dataspaces = client.cast()?;
         let symbols = client.cast()?;
-        let client = client.cast()?;
-
+        let system = client.cast()?;
+        let client = client.cast()?;        
+        
         Ok(Self {
             client,
             control,
             registers,
             dataspaces,
             symbols,
+            system,
         })
     }
 
@@ -338,6 +347,21 @@ impl DebugClient {
         let v = self.regs64(&[name])?;
 
         Ok(v[0])
+    }
+
+    /// Set the value of a register identified by uts name
+    pub fn set_reg64(&self, name: &str, value: u64) -> Result<()> {
+        let indices = self.reg_indices(&[name])?; 
+        unsafe {                         
+            let mut debug_value = DEBUG_VALUE::default();          
+            debug_value.Anonymous.I64Parts32.HighPart = (value >> 32) as u32;
+            debug_value.Anonymous.I64Parts32.LowPart =  value as u32;
+            debug_value.Type = DEBUG_VALUE_INT64;           
+            self.registers.SetValue(indices[0], &debug_value)
+                .with_context(|| format!("SetValue failed for {name}"))?;
+        }
+
+        Ok(())
     }
 
     /// Get the value of a specific MSR.
@@ -538,5 +562,21 @@ impl DebugClient {
         buffer.resize(length - 1, 0);
 
         Ok(String::from_utf8_lossy(&buffer).into_owned())
+    }
+
+    pub fn get_current_process_id(&self) -> Result<u32> {
+        let process_id = unsafe {
+            self.system.GetCurrentProcessSystemId()
+        }
+        .context("GetCurrentProcessId failed")?;
+        Ok(process_id)
+    }
+
+    pub fn get_current_thread_id(&self) -> Result<u32> {
+        let thread_id = unsafe {
+            self.system.GetCurrentThreadSystemId()
+        }
+        .context("GetCurrentThreadId failed")?;
+        Ok(thread_id)
     }
 }

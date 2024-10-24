@@ -137,21 +137,18 @@ impl EventCallbacks for PluginEventCallbacks {
     }
 
     fn exception(&self, client: &DebugClient, ei: &ExceptionInfo) -> DebugInstruction {    
-        if ei.record.exception_code == EXCEPTION_ACCESS_VIOLATION {            
-            if ei.first_chance == 1 {
-                let _ = dbgeng::dlogln!(client, "Exception at 0x{:x} first chance: {}. Exception type: 0x{:x}", 
-                    ei.record.exception_address, ei.first_chance, ei.record.exception_code.0 as u32);
-                match handle_exception(client, ei) {
-                    Err(e) => {
-                        let _ = dbgeng::dlogln!(client, "Error during exception handling for created breakpoint: {e}");
-                    },
-                    Ok(_) => {
-                        return DebugInstruction::GoHandled;
-                    }
+        if ei.first_chance == 1 && ei.record.exception_code == EXCEPTION_ACCESS_VIOLATION {            
+            let _ = dbgeng::dlogln!(client, "Exception at 0x{:x} first chance: {}. Exception type: 0x{:x}", 
+                ei.record.exception_address, ei.first_chance, ei.record.exception_code.0 as u32);
+            match handle_exception(client, ei) {
+                Err(e) => {
+                    let _ = dbgeng::dlogln!(client, "Error during exception handling for created breakpoint: {e}");
+                },
+                Ok(_) => {
+                    return DebugInstruction::GoHandled;
                 }
-            }    
+            }
         }
-        let _ = dbgeng::dlogln!(client, "Exception NOT handled");
         DebugInstruction::GoNotHandled        
     }
 }

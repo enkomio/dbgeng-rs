@@ -1,6 +1,7 @@
-use std::cell::{OnceCell, RefCell};
+use std::cell::RefCell;
 use std::ffi::c_void;
-use std::path::PathBuf;
+use std::{env, fs};
+use std::path::{self, PathBuf};
 use anyhow::{bail, Context};
 use dbgeng::breakpoint::BreakpointFlags;
 use dbgeng::{
@@ -9,47 +10,65 @@ use dbgeng::{
     events::{DebugInstruction, EventCallbacks}, 
     exception::ExceptionInfo
 };
+use windows::Win32::System::Diagnostics::Debug::Extensions::{DEBUG_CES_EXECUTION_STATUS, DEBUG_STATUS_BREAK};
 use windows::Win32::System::Memory::{VirtualProtectEx, PAGE_EXECUTE_READWRITE, PAGE_PROTECTION_FLAGS, PAGE_READWRITE};
 use windows::Win32::System::Threading::{OpenProcess, PROCESS_ALL_ACCESS};
 use windows::Win32::Foundation::{CloseHandle, EXCEPTION_ACCESS_VIOLATION};
 
-use crate::entities::{AllocatedMemory, MemoryRegions};
+use crate::entities::{AllocatedMemory, BreakpointFunction, MemoryRegions};
 
 thread_local! {
-    pub static MEMORY_REGIONS: OnceCell<RefCell<MemoryRegions>> = OnceCell::new();
+    pub static MEMORY_REGIONS: MemoryRegions = MemoryRegions::new();
 }
 
-#[allow(non_snake_case)]
-fn VirtualAlloc_exit(regions: &mut MemoryRegions, client: &DebugClient, bp: &DebugBreakpoint) -> anyhow::Result<()> {
-    let rax = client.reg64("rax")?;
-    if let Some(bp_data) = regions.get_breakpoint(bp) {
-        if let Some(allocation) = bp_data.allocation.as_mut() {
-            allocation.returned_address = rax;
-        }        
+fn dump_dynamic_code(client: &DebugClient, mem_alloc: &AllocatedMemory) -> anyhow::Result<()> {
+    let out_dir = env::temp_dir().join("dump");
+    if !out_dir.is_dir() {
+        fs::create_dir(&out_dir)?;
+    }    
+    let file_name = path::absolute(out_dir.join(format!("dump_{:x}_{}.bin", mem_alloc.address, mem_alloc.size)))?;
+    if !file_name.is_file() {
+        let mut buffer = vec![0; mem_alloc.size as usize];
+        client.read_virtual(mem_alloc.address, &mut buffer[..])?;        
+        let _ = fs::write(&file_name, buffer);    
+        let _ = dbgeng::dlogln!(client, "Dumped allocated memory to file: {}", file_name.display());
     }
     Ok(())
 }
 
 #[allow(non_snake_case)]
-fn VirtualAlloc_enter(regions: &mut MemoryRegions, client: &DebugClient, bp: &DebugBreakpoint) -> anyhow::Result<()> { 
+fn VirtualAlloc_exit(regions: &MemoryRegions, client: &DebugClient) -> anyhow::Result<()> {
+    let regs = client.regs64(&["rax", "rip"])?;
+    let rax = regs[0];
+    let rip = regs[1];
+    regions.update_allocation(rip, rax);
+    Ok(())
+}
+
+#[allow(non_snake_case)]
+fn VirtualAlloc_enter(regions: &MemoryRegions, client: &DebugClient, bp: &DebugBreakpoint) -> anyhow::Result<()> { 
     let regs = client.regs64(&["rdx", "r9"])?;
+    let stack = client.context_stack_frames(1).unwrap();
+    let ro = stack[0].ReturnOffset;        
+
+    // create new allocation
     let allocation = AllocatedMemory {        
         size: regs[0],
         protection: regs[1] as u32,
-        returned_address: 0
+        address: 0,
+        function_return: ro
     };
+    regions.new_allocation(&allocation);    
         
     // set a bp on the return address if necessary
-    if !regions.is_function_exit_hooked(bp) {
-        let stack = client.context_stack_frames(1).unwrap();
-        let ro = stack[0].ReturnOffset;        
+    if !regions.is_function_exit_hooked(bp) {        
         let bp_exit = client.add_breakpoint(BreakpointType::Code, None).unwrap();
         let _ = bp_exit.set_offset(ro);
         let _ = bp_exit.set_flags(BreakpointFlags::ENABLED);
-        regions.add_breakpoint_with_allocation(bp_exit, allocation);
-        regions.function_exit_hooked(bp);
+        regions.add_breakpoint(bp_exit, BreakpointFunction::VirtualAllocExit);
+        regions.set_function_exit_hooked(bp);
         let _ = dbgeng::dlogln!(client, "Hook VirtualAlloc return address at 0x{:x}", ro);
-    }
+    }    
 
     // write PAGE_READWRITE if PAGE_EXECUTE_READWRITE is found
     if regs[1] as u32 == PAGE_EXECUTE_READWRITE.0 {
@@ -58,9 +77,15 @@ fn VirtualAlloc_enter(regions: &mut MemoryRegions, client: &DebugClient, bp: &De
     Ok(())
 }
 
+#[allow(non_snake_case)]
+fn VirtualFree(regions: &MemoryRegions, client: &DebugClient) -> anyhow::Result<()> {
+    let regs = client.regs64(&["rcx", "rdx"])?;
+    regions.free_allocation(regs[0], regs[1]);
+    Ok(())
+}
+
 fn handle_exception(client: &DebugClient, ei: &ExceptionInfo) -> anyhow::Result<()> {
     MEMORY_REGIONS.with(|regions| { 
-        let regions = regions.get().context("regions object not set")?.borrow_mut();
         if let Some(mem_alloc) = regions.get_allocation(ei.record.exception_address) {
             let pid = client.get_current_process_id()?;
             let process_handle = unsafe {
@@ -75,9 +100,11 @@ fn handle_exception(client: &DebugClient, ei: &ExceptionInfo) -> anyhow::Result<
                 bail!("Unable to ope the process {pid}")
             }
             else {
+                dump_dynamic_code(client, &mem_alloc)?;
+                
                 // set back the original protection
                 let mut old_protect = PAGE_PROTECTION_FLAGS::default();
-                let address = mem_alloc.returned_address as *const c_void;
+                let address = mem_alloc.address as *const c_void;
                 unsafe {
                     VirtualProtectEx(
                         process_handle, 
@@ -86,11 +113,11 @@ fn handle_exception(client: &DebugClient, ei: &ExceptionInfo) -> anyhow::Result<
                         PAGE_PROTECTION_FLAGS(mem_alloc.protection), 
                         &mut old_protect
                     )?;
-
                     CloseHandle(process_handle)?;
-                }                
+                }        
                 Ok(())
-            }            
+            }
+                          
         }
         else {
             bail!("memory region not found")
@@ -103,52 +130,78 @@ pub fn start_monitor(client: &DebugClient, args: String) -> anyhow::Result<()> {
     let file = PathBuf::from(args.next().context("missing file name")?.to_string());
 
     MEMORY_REGIONS.with(|regions| { 
-        let mut regions = regions.get().context("regions object not set")?.borrow_mut();
         regions.set_file(&file);
-
-        let _ = dbgeng::dlogln!(client, "Added KERNELBASE!VirtualAlloc for monitoring memory allocation");
+        
         let bp = client.add_breakpoint(BreakpointType::Code, None)?;
         bp.set_offset_expression(String::from("KERNELBASE!VirtualAlloc"))?;
         bp.set_flags(BreakpointFlags::ENABLED)?;
-        regions.add_breakpoint(bp);
-        client.set_event_callbacks(PluginEventCallbacks)
+        regions.add_breakpoint(bp, BreakpointFunction::VirtualAllocEnter);
+        let _ = dbgeng::dlogln!(client, "Added KERNELBASE!VirtualAlloc for monitoring memory allocation");        
+        
+        let bp_free = client.add_breakpoint(BreakpointType::Code, None)?;
+        bp_free.set_offset_expression(String::from("KERNELBASE!VirtualFree"))?;
+        bp_free.set_flags(BreakpointFlags::ENABLED)?;
+        regions.add_breakpoint(bp_free, BreakpointFunction::VirtualFree);
+        let _ = dbgeng::dlogln!(client, "Added KERNELBASE!VirtualFree for monitoring memory deallocation");        
+        
+        client.set_event_callbacks(PluginEventCallbacks {exception_handled: RefCell::new(0)})
     })
 }
 
-struct PluginEventCallbacks;
+fn handle_breakpoint(client: &DebugClient, bp: &DebugBreakpoint) {
+    MEMORY_REGIONS.with(|regions| {        
+        match regions.get_breakpoint_type(bp) {
+            BreakpointFunction::VirtualAllocEnter => { let _ = VirtualAlloc_enter(regions, client, bp); },
+            BreakpointFunction::VirtualAllocExit => { let _ = VirtualAlloc_exit(regions, client); },
+            BreakpointFunction::VirtualFree => { let _ = VirtualFree(regions, client); },
+            _ => {}
+        }
+    });
+}
+
+struct PluginEventCallbacks {
+    exception_handled: RefCell<i32>
+}
+
 impl EventCallbacks for PluginEventCallbacks {
-    fn breakpoint(&self, client: &DebugClient, bp: &DebugBreakpoint) -> DebugInstruction {
-        MEMORY_REGIONS.with(|regions| { 
-            if let Ok(regions) = regions.get().context("regions object not set") {
-                let mut regions = regions.borrow_mut();
-                if regions.is_monitored_breakpoint(bp) {
-                    let _ = VirtualAlloc_enter(&mut regions, client, bp);
-                    let _ = VirtualAlloc_exit(&mut regions, client, bp);
-                    DebugInstruction::Go
-                }
-                else {
-                    DebugInstruction::NoChange
-                }
-            }
-            else {
-                DebugInstruction::NoChange
-            }
-        })
+    fn breakpoint(&self, client: &DebugClient, bp: &DebugBreakpoint) -> DebugInstruction {        
+        if MEMORY_REGIONS.with(|regions| regions.is_monitored_breakpoint(bp)) {
+            handle_breakpoint(client, bp);
+            DebugInstruction::Go
+        }
+        else {
+            DebugInstruction::NoChange
+        }
     }
 
     fn exception(&self, client: &DebugClient, ei: &ExceptionInfo) -> DebugInstruction {    
-        if ei.first_chance == 1 && ei.record.exception_code == EXCEPTION_ACCESS_VIOLATION {            
-            let _ = dbgeng::dlogln!(client, "Exception at 0x{:x} first chance: {}. Exception type: 0x{:x}", 
-                ei.record.exception_address, ei.first_chance, ei.record.exception_code.0 as u32);
+        if ei.record.exception_code == EXCEPTION_ACCESS_VIOLATION {            
+            let _ = dbgeng::dlogln!(client, 
+                "Exception at 0x{:x} first chance: {}. Exception type: 0x{:x}", 
+                ei.record.exception_address, 
+                ei.first_chance, 
+                ei.record.exception_code.0 as u32
+            );           
+
             match handle_exception(client, ei) {
-                Err(e) => {
-                    let _ = dbgeng::dlogln!(client, "Error during exception handling for created breakpoint: {e}");
-                },
+                Err(e) => { let _ = dbgeng::dlogln!(client, "Error during exception handling for created breakpoint: {e}"); },
                 Ok(_) => {
+                    self.exception_handled.replace(2);
                     return DebugInstruction::GoHandled;
                 }
             }
         }
         DebugInstruction::GoNotHandled        
+    }
+
+    fn change_engine_state(&self, client: &DebugClient, flags: u32, argument: u64) {      
+        let exception_pending = self.exception_handled.borrow().is_positive();
+        if flags == DEBUG_CES_EXECUTION_STATUS && argument as u32 == DEBUG_STATUS_BREAK && exception_pending {
+            let old_value = self.exception_handled.replace_with(|&mut old| old - 1);        
+            if old_value > 0 {
+                let _ = dbgeng::dlogln!(client, "Continue execution with 'g'");
+                let _ = client.exec("g");
+            }
+        }
     }
 }

@@ -14,11 +14,7 @@ fn initialize(version: *mut u32, flags: *mut u32) -> HRESULT {
     if !is_intel64 {
         let _ = dbgeng::dlogln!(client, "expected an Intel 64-bit guest target");
     }
-    else {
-        // REMOVE
-        let _ = start_monitor(&client, "unpack.txt".to_string());
-    }
-
+    
     unsafe {
         *version = 0x0001_0000;
         *flags = 0x00000000;

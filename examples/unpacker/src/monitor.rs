@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::ffi::c_void;
-use std::{env, fs};
-use std::path::{self, PathBuf};
+use std::fs;
+use std::path::PathBuf;
 use anyhow::{bail, Context};
 use dbgeng::breakpoint::BreakpointFlags;
 use dbgeng::{
@@ -22,18 +22,16 @@ thread_local! {
 }
 
 fn dump_dynamic_code(client: &DebugClient, mem_alloc: &AllocatedMemory) -> anyhow::Result<()> {
-    let out_dir = env::temp_dir().join("dump");
-    if !out_dir.is_dir() {
-        fs::create_dir(&out_dir)?;
-    }    
-    let file_name = path::absolute(out_dir.join(format!("dump_{:x}_{}.bin", mem_alloc.address, mem_alloc.size)))?;
-    if !file_name.is_file() {
-        let mut buffer = vec![0; mem_alloc.size as usize];
-        client.read_virtual(mem_alloc.address, &mut buffer[..])?;        
-        let _ = fs::write(&file_name, buffer);    
-        let _ = dbgeng::dlogln!(client, "Dumped allocated memory to file: {}", file_name.display());
-    }
-    Ok(())
+    MEMORY_REGIONS.with(|regions| { 
+        let file_name = regions.get_dump_file(mem_alloc)?;
+        if !file_name.is_file() {
+            let mut buffer = vec![0; mem_alloc.size as usize];
+            client.read_virtual(mem_alloc.address, &mut buffer[..])?;        
+            fs::write(&file_name, buffer)?;
+            dbgeng::dlogln!(client, "Dumped allocated memory to file: {}", file_name.display())?;            
+        }
+        Ok(())
+    })    
 }
 
 #[allow(non_snake_case)]
@@ -125,12 +123,16 @@ fn handle_exception(client: &DebugClient, ei: &ExceptionInfo) -> anyhow::Result<
     })
 }
 
-pub fn start_monitor(client: &DebugClient, args: String) -> anyhow::Result<()> {
+pub fn start_monitor(_: &DebugClient, args: String) -> anyhow::Result<()> {
+    let client = DebugClient::create().unwrap();  
     let mut args = args.split_whitespace();
-    let file = PathBuf::from(args.next().context("missing file name")?.to_string());
+    let directory = PathBuf::from(args.next().context("missing directory name")?.to_string());
+    if !directory.is_dir() {
+        fs::create_dir_all(&directory)?;
+    }
 
     MEMORY_REGIONS.with(|regions| { 
-        regions.set_file(&file);
+        regions.set_directory(&directory);
         
         let bp = client.add_breakpoint(BreakpointType::Code, None)?;
         bp.set_offset_expression(String::from("KERNELBASE!VirtualAlloc"))?;
@@ -194,7 +196,7 @@ impl EventCallbacks for PluginEventCallbacks {
         DebugInstruction::GoNotHandled        
     }
 
-    fn change_engine_state(&self, client: &DebugClient, flags: u32, argument: u64) {      
+    fn change_engine_state(&self, client: &DebugClient, flags: u32, argument: u64) {  
         let exception_pending = self.exception_handled.borrow().is_positive();
         if flags == DEBUG_CES_EXECUTION_STATUS && argument as u32 == DEBUG_STATUS_BREAK && exception_pending {
             let old_value = self.exception_handled.replace_with(|&mut old| old - 1);        
@@ -202,6 +204,6 @@ impl EventCallbacks for PluginEventCallbacks {
                 let _ = dbgeng::dlogln!(client, "Continue execution with 'g'");
                 let _ = client.exec("g");
             }
-        }
+        } 
     }
 }

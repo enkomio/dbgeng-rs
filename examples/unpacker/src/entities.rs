@@ -1,4 +1,5 @@
-use std::{cell::RefCell, collections::HashMap, path::PathBuf};
+use std::{cell::RefCell, collections::HashMap, path::{self, PathBuf}};
+use anyhow;
 use dbgeng::{breakpoint::DebugBreakpoint, client::DebugClient};
 use windows::core::GUID;
 
@@ -26,7 +27,7 @@ pub struct CallbackBreakpointData {
 
 #[derive(Default)]
 pub struct MemoryRegions {
-    file: RefCell<PathBuf>,
+    directory: RefCell<PathBuf>,
     breakpoints: RefCell<HashMap<GUID, CallbackBreakpointData>>,
     allocations: RefCell<Vec<AllocatedMemory>>
 }
@@ -34,14 +35,19 @@ pub struct MemoryRegions {
 impl MemoryRegions {
     pub fn new() -> MemoryRegions {
         MemoryRegions {
-            file: RefCell::new(PathBuf::new()),
+            directory: RefCell::new(PathBuf::new()),
             breakpoints: RefCell::new(HashMap::new()),
             allocations: RefCell::new(Vec::new())
         }
     }
 
-    pub fn set_file(&self, file: &PathBuf) {
-        *self.file.borrow_mut() = file.clone();
+    pub fn set_directory(&self, directory: &PathBuf) {
+        *self.directory.borrow_mut() = directory.clone();
+    }
+
+    pub fn get_dump_file(&self, mem_alloc: &AllocatedMemory) -> anyhow::Result<PathBuf> {
+        let file_name = self.directory.borrow().join(format!("dump_{:x}_{}.bin", mem_alloc.address, mem_alloc.size));
+        path::absolute(file_name).map_err(anyhow::Error::from)
     }
 
     pub fn add_breakpoint(&self, bp: DebugBreakpoint, function: BreakpointFunction) {

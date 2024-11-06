@@ -3,7 +3,7 @@ use std::panic::AssertUnwindSafe;
 use windows::core::{implement, HRESULT};
 use windows::Win32::System::Diagnostics::Debug::Extensions::{
     IDebugBreakpoint, IDebugEventCallbacks, IDebugEventCallbacks_Impl, 
-    DEBUG_EVENT_BREAKPOINT, DEBUG_EVENT_EXCEPTION, 
+    DEBUG_EVENT_BREAKPOINT, DEBUG_EVENT_CHANGE_ENGINE_STATE, DEBUG_EVENT_EXCEPTION,
     DEBUG_STATUS_BREAK, DEBUG_STATUS_GO, DEBUG_STATUS_GO_HANDLED, DEBUG_STATUS_GO_NOT_HANDLED, 
     DEBUG_STATUS_IGNORE_EVENT, DEBUG_STATUS_NO_CHANGE, DEBUG_STATUS_RESTART_REQUESTED, 
     DEBUG_STATUS_STEP_BRANCH, DEBUG_STATUS_STEP_INTO, DEBUG_STATUS_STEP_OVER
@@ -64,6 +64,7 @@ impl DebugInstruction {
 pub trait EventCallbacks {
     fn breakpoint(&self, _client: &DebugClient, _bp: &DebugBreakpoint) -> DebugInstruction;
     fn exception(&self, _client: &DebugClient, _ei: &ExceptionInfo) -> DebugInstruction;
+    fn change_engine_state(&self, _client: &DebugClient, _flags: u32, _argument: u64);
 }
 
 #[implement(IDebugEventCallbacks)]
@@ -82,7 +83,8 @@ impl IDebugEventCallbacks_Impl for DbgEventCallbacks {
     fn GetInterestMask(&self) -> windows::core::Result<u32> {
         Ok(
             DEBUG_EVENT_BREAKPOINT | 
-            DEBUG_EVENT_EXCEPTION
+            DEBUG_EVENT_EXCEPTION | 
+            DEBUG_EVENT_CHANGE_ENGINE_STATE
         )
     }
 
@@ -226,8 +228,11 @@ impl IDebugEventCallbacks_Impl for DbgEventCallbacks {
         Ok(())
     }
 
-    fn ChangeEngineState(&self, _flags: u32, _argument: u64) -> windows::core::Result<()> {
-        let _ = dlogln!(self.client, "Event: ChangeEngineState. Flags: 0x{:x}, Arguments: 0x{:x}", _flags, _argument);
+    fn ChangeEngineState(&self, flags: u32, argument: u64) -> windows::core::Result<()> {
+         let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            self.callbacks
+                .change_engine_state(&self.client, flags, argument)
+        }));
         Ok(())
     }
 

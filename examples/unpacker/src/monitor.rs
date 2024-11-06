@@ -113,15 +113,12 @@ fn handle_exception(client: &DebugClient, ei: &ExceptionInfo) -> anyhow::Result<
                         &mut old_protect
                     )?;
                     CloseHandle(process_handle)?;
-                }        
-                Ok(())
-            }
-                          
-        }
-        else {
-            bail!("memory region not found")
-        }        
+                }                        
+            }                          
+        }  
+        Ok(())
     })
+
 }
 
 pub fn start_monitor(_: &DebugClient, args: String) -> anyhow::Result<()> {

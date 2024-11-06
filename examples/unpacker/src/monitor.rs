@@ -39,7 +39,8 @@ fn VirtualAlloc_exit(regions: &MemoryRegions, client: &DebugClient) -> anyhow::R
     let regs = client.regs64(&["rax", "rip"])?;
     let rax = regs[0];
     let rip = regs[1];
-    regions.update_allocation(rip, rax);
+    let allocation_size = regions.update_allocation(rip, rax);
+    let _ = dbgeng::dlogln!(client, "Allocated 0x{:x} bytes at address: 0x{:x}", allocation_size, rax);
     Ok(())
 }
 

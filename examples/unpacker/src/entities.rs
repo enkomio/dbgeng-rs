@@ -88,14 +88,18 @@ impl MemoryRegions {
         self.allocations.borrow_mut().push(mem_allocation.clone());
     }
 
-    pub fn update_allocation(&self, function_return_addr: u64, allocated_address: u64) {
+    pub fn update_allocation(&self, function_return_addr: u64, allocated_address: u64) -> u64 {
         if let Some(allocation) = self.allocations.borrow_mut().iter_mut().find(|a| a.function_return == function_return_addr) {
             allocation.address = allocated_address;
+            allocation.size
+        }
+        else {
+            0
         }
     }
 
     pub fn get_allocation(&self, address: u64) -> Option<AllocatedMemory> {
-        self.allocations.borrow().iter().find(|a| a.address == address).cloned()
+        self.allocations.borrow().iter().find(|a| address >= a.address && a.address + a.size < address).cloned()
     }
 
     pub fn free_allocation(&self, address: u64, size: u64) {

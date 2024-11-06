@@ -94,7 +94,7 @@ impl MemoryRegions {
     }
 
     pub fn get_allocation(&self, address: u64) -> Option<AllocatedMemory> {
-        self.allocations.borrow().iter().find(|a| address >= a.address && a.address + a.size < address).cloned()
+        self.allocations.borrow().iter().find(|a| address >= a.address && a.address + a.size > address).cloned()
     }
 
     pub fn free_allocation(&self, address: u64, size: u64) {

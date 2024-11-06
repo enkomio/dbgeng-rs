@@ -45,7 +45,7 @@ fn VirtualAlloc_exit(regions: &MemoryRegions, client: &DebugClient) -> anyhow::R
 }
 
 #[allow(non_snake_case)]
-fn VirtualAlloc_enter(regions: &MemoryRegions, client: &DebugClient, bp: &DebugBreakpoint) -> anyhow::Result<()> { 
+fn VirtualAlloc_enter(regions: &MemoryRegions, client: &DebugClient) -> anyhow::Result<()> { 
     let regs = client.regs64(&["rdx", "r9"])?;
     let stack = client.context_stack_frames(1).unwrap();
     let ro = stack[0].ReturnOffset;  
@@ -61,12 +61,11 @@ fn VirtualAlloc_enter(regions: &MemoryRegions, client: &DebugClient, bp: &DebugB
     regions.new_allocation(&allocation);    
         
     // set a bp on the return address if necessary
-    if !regions.is_function_exit_hooked(ro) {        
+    if !regions.is_address_hooked(ro,  BreakpointFunction::VirtualAllocExit) {        
         let bp_exit = client.add_breakpoint(BreakpointType::Code, None).unwrap();
         let _ = bp_exit.set_offset(ro);
         let _ = bp_exit.set_flags(BreakpointFlags::ENABLED);
-        regions.add_breakpoint(bp_exit, ro, BreakpointFunction::VirtualAllocExit);
-        regions.set_function_exit_hooked(bp);
+        regions.add_breakpoint(bp_exit, ro, BreakpointFunction::VirtualAllocExit);        
         let _ = dbgeng::dlogln!(client, "Hook VirtualAlloc return address at 0x{:x}", ro);
     }    
 
@@ -152,7 +151,7 @@ pub fn start_monitor(_: &DebugClient, args: String) -> anyhow::Result<()> {
 fn handle_breakpoint(client: &DebugClient, bp: &DebugBreakpoint) {
     MEMORY_REGIONS.with(|regions| {        
         match regions.get_breakpoint_type(bp) {
-            BreakpointFunction::VirtualAllocEnter => { let _ = VirtualAlloc_enter(regions, client, bp); },
+            BreakpointFunction::VirtualAllocEnter => { let _ = VirtualAlloc_enter(regions, client); },
             BreakpointFunction::VirtualAllocExit => { let _ = VirtualAlloc_exit(regions, client); },
             BreakpointFunction::VirtualFree => { let _ = VirtualFree(regions, client); },
             _ => {}

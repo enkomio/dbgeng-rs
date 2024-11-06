@@ -11,7 +11,7 @@ pub struct  AllocatedMemory {
     pub function_return: u64
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum BreakpointFunction {
     VirtualAllocEnter,
     VirtualAllocExit,
@@ -20,7 +20,6 @@ pub enum BreakpointFunction {
 }
 
 pub struct CallbackBreakpointData {
-    pub function_exit_hooked: bool,
     address: u64,
     function: BreakpointFunction,
     bp: DebugBreakpoint,    
@@ -54,7 +53,6 @@ impl MemoryRegions {
     pub fn add_breakpoint(&self, bp: DebugBreakpoint, address: u64, function: BreakpointFunction) {
         self.breakpoints.borrow_mut().insert(
             bp.guid().unwrap(), CallbackBreakpointData {
-                function_exit_hooked: false,
                 function,
                 address,
                 bp
@@ -66,12 +64,8 @@ impl MemoryRegions {
         self.breakpoints.borrow().iter().any(|(_,b)| b.bp.guid().unwrap() == bp_id)
     }
 
-    pub fn is_function_exit_hooked(&self, return_address: u64) -> bool {
-        self.breakpoints.borrow().values().any(|bp| bp.address == return_address)
-    }
-
-    pub fn set_function_exit_hooked(&self, bp: &DebugBreakpoint) {
-        self.breakpoints.borrow_mut().entry(bp.guid().unwrap()).and_modify(|bpd| bpd.function_exit_hooked = true);
+    pub fn is_address_hooked(&self, address: u64, bp_type: BreakpointFunction) -> bool {
+        self.breakpoints.borrow().values().any(|bp| bp.function == bp_type && bp.address == address)
     }
 
     pub fn remove_all_breakpoints(&self) {

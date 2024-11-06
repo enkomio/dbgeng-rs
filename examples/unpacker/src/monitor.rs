@@ -48,7 +48,8 @@ fn VirtualAlloc_exit(regions: &MemoryRegions, client: &DebugClient) -> anyhow::R
 fn VirtualAlloc_enter(regions: &MemoryRegions, client: &DebugClient, bp: &DebugBreakpoint) -> anyhow::Result<()> { 
     let regs = client.regs64(&["rdx", "r9"])?;
     let stack = client.context_stack_frames(1).unwrap();
-    let ro = stack[0].ReturnOffset;        
+    let ro = stack[0].ReturnOffset;  
+    let _ = dbgeng::dlogln!(client, "Requested allocation for 0x{:x} bytes with protection 0x{:x}", regs[0], regs[1]);      
 
     // create new allocation
     let allocation = AllocatedMemory {        
@@ -60,11 +61,11 @@ fn VirtualAlloc_enter(regions: &MemoryRegions, client: &DebugClient, bp: &DebugB
     regions.new_allocation(&allocation);    
         
     // set a bp on the return address if necessary
-    if !regions.is_function_exit_hooked(bp) {        
+    if !regions.is_function_exit_hooked(ro) {        
         let bp_exit = client.add_breakpoint(BreakpointType::Code, None).unwrap();
         let _ = bp_exit.set_offset(ro);
         let _ = bp_exit.set_flags(BreakpointFlags::ENABLED);
-        regions.add_breakpoint(bp_exit, BreakpointFunction::VirtualAllocExit);
+        regions.add_breakpoint(bp_exit, ro, BreakpointFunction::VirtualAllocExit);
         regions.set_function_exit_hooked(bp);
         let _ = dbgeng::dlogln!(client, "Hook VirtualAlloc return address at 0x{:x}", ro);
     }    
@@ -135,13 +136,13 @@ pub fn start_monitor(_: &DebugClient, args: String) -> anyhow::Result<()> {
         let bp = client.add_breakpoint(BreakpointType::Code, None)?;
         bp.set_offset_expression(String::from("KERNELBASE!VirtualAlloc"))?;
         bp.set_flags(BreakpointFlags::ENABLED)?;
-        regions.add_breakpoint(bp, BreakpointFunction::VirtualAllocEnter);
+        regions.add_breakpoint(bp, 0, BreakpointFunction::VirtualAllocEnter);
         let _ = dbgeng::dlogln!(client, "Added KERNELBASE!VirtualAlloc for monitoring memory allocation");        
         
         let bp_free = client.add_breakpoint(BreakpointType::Code, None)?;
         bp_free.set_offset_expression(String::from("KERNELBASE!VirtualFree"))?;
         bp_free.set_flags(BreakpointFlags::ENABLED)?;
-        regions.add_breakpoint(bp_free, BreakpointFunction::VirtualFree);
+        regions.add_breakpoint(bp_free, 0, BreakpointFunction::VirtualFree);
         let _ = dbgeng::dlogln!(client, "Added KERNELBASE!VirtualFree for monitoring memory deallocation");        
         
         client.set_event_callbacks(PluginEventCallbacks {exception_handled: RefCell::new(0)})

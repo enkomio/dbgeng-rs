@@ -21,6 +21,7 @@ pub enum BreakpointFunction {
 
 pub struct CallbackBreakpointData {
     pub function_exit_hooked: bool,
+    address: u64,
     function: BreakpointFunction,
     bp: DebugBreakpoint,    
 }
@@ -50,11 +51,12 @@ impl MemoryRegions {
         path::absolute(file_name).map_err(anyhow::Error::from)
     }
 
-    pub fn add_breakpoint(&self, bp: DebugBreakpoint, function: BreakpointFunction) {
+    pub fn add_breakpoint(&self, bp: DebugBreakpoint, address: u64, function: BreakpointFunction) {
         self.breakpoints.borrow_mut().insert(
             bp.guid().unwrap(), CallbackBreakpointData {
                 function_exit_hooked: false,
                 function,
+                address,
                 bp
             });
     }
@@ -64,9 +66,8 @@ impl MemoryRegions {
         self.breakpoints.borrow().iter().any(|(_,b)| b.bp.guid().unwrap() == bp_id)
     }
 
-    pub fn is_function_exit_hooked(&self, bp: &DebugBreakpoint) -> bool {
-        if let Some(bp) = self.breakpoints.borrow().get(&bp.guid().unwrap()) 
-        { bp.function_exit_hooked } else { false}
+    pub fn is_function_exit_hooked(&self, return_address: u64) -> bool {
+        self.breakpoints.borrow().values().any(|bp| bp.address == return_address)
     }
 
     pub fn set_function_exit_hooked(&self, bp: &DebugBreakpoint) {

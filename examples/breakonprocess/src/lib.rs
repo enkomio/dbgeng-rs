@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use dbgeng::breakpoint::{BreakpointFlags, BreakpointType, DebugBreakpoint};
 use dbgeng::client::DebugClient;
 use dbgeng::events::{DebugInstruction, EventCallbacks};
+use dbgeng::exception::ExceptionInfo;
 use dbgeng::{dlogln, export_cmd};
 use windows::core::{GUID, HRESULT};
 use windows::Win32::Foundation::S_OK;
@@ -129,6 +130,10 @@ struct PluginEventCallbacks;
 impl EventCallbacks for PluginEventCallbacks {
     fn breakpoint(&self, client: &DebugClient, bp: &DebugBreakpoint) -> DebugInstruction {
         BREAKPOINTS.with(|breakpoints| breakpoints.call(client, bp))
+    }
+
+    fn exception(&self, _client: &DebugClient, _ei: &ExceptionInfo) -> DebugInstruction {
+        DebugInstruction::NoChange
     }
 }
 

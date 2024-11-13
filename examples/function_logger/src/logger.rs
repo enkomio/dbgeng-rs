@@ -2,6 +2,7 @@ use dbgeng::breakpoint::DebugBreakpoint;
 use dbgeng::events::{EventCallbacks, DebugInstruction};
 use anyhow::Result;
 use dbgeng::client::DebugClient;
+use dbgeng::exception::ExceptionInfo;
 use std::cell::OnceCell;
 use crate::bp::BREAKPOINTS;
 
@@ -13,6 +14,10 @@ struct PluginEventCallbacks;
 impl EventCallbacks for PluginEventCallbacks {
     fn breakpoint(&self, client: &DebugClient, bp: &DebugBreakpoint) -> DebugInstruction {
         BREAKPOINTS.with(|breakpoints| breakpoints.call(client, bp))
+    }
+
+    fn exception(&self, _client: &DebugClient, _ei: &ExceptionInfo) -> DebugInstruction {
+        DebugInstruction::NoChange
     }
 }
 
@@ -37,11 +42,11 @@ pub fn monitored_func_start(
 }
 
 pub fn init_accessible(client: DebugClient) -> anyhow::Result<()> {
-    dbgeng::dlogln!(client, "Function Logger extension initialized")?;
-    client.set_event_callbacks(PluginEventCallbacks)?;
+    dbgeng::dlogln!(client, "Function Logger extension initialized")?;    
     CLIENT.with(|c| {
-        c.set(client)
+        c.set(client.clone())
             .map_err(|_e| anyhow::anyhow!("Failed to set the client"))
-    })?;
+    })?;    
+    client.set_event_callbacks(PluginEventCallbacks)?;
     Ok(())
 }

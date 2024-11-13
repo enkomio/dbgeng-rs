@@ -46,7 +46,7 @@ impl MemoryRegions {
     }
 
     pub fn get_dump_file(&self, mem_alloc: &AllocatedMemory) -> anyhow::Result<PathBuf> {
-        let file_name = self.directory.borrow().join(format!("dump_{:x}_{}.bin", mem_alloc.address, mem_alloc.size));
+        let file_name = self.directory.borrow().join(format!("dump_{:x}_{}.bin", mem_alloc.address, mem_alloc.size));        
         path::absolute(file_name).map_err(anyhow::Error::from)
     }
 

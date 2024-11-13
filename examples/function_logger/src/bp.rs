@@ -31,7 +31,7 @@ impl CallbackBreakpoints {
         }
     }
 
-    pub fn uninit(&self, client: &DebugClient) {
+    pub fn uninitialize(&self, client: &DebugClient) {
         let mut inner = self.inner.borrow_mut();
         for (_, data) in inner.drain() {            
             let _ = client.remove_breakpoint(data.bp);
@@ -56,7 +56,7 @@ impl CallbackBreakpoints {
             }).is_some()
     }
 
-    pub fn call(&self, client: &DebugClient, bp: &DebugBreakpoint) -> DebugInstruction {
+    pub fn call(&self, client: &DebugClient, bp: &DebugBreakpoint) -> DebugInstruction {        
         let mut function_name = String::new();
         let mut need_to_hook = false;
 

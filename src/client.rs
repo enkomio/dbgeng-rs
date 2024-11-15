@@ -99,12 +99,6 @@ impl Seg {
             base |= value.bits(64..=95) << 32;
         }
 
-        let granularity = value.bit(55) == 1;
-        let increment = if granularity { 0x1_000 } else { 1 };
-        let limit = limit
-            .wrapping_mul(increment)
-            .wrapping_add(if granularity { 0xfff } else { 0 });
-
         Seg {
             present,
             selector,
@@ -113,36 +107,35 @@ impl Seg {
             attr,
         }
     }
-
-    pub fn end_addr(&self) -> u64 {
-        self.base.wrapping_add(self.limit.into())
-    }
 }
 
 /// Macro to make it nicer to invoke [`DebugClient::logln`] /
 /// [`DebugClient::log`] by avoiding to [`format!`] everytime the arguments.
 #[macro_export]
 macro_rules! dlogln {
-    ($dbg:ident, $($arg:tt)*) => {{
+    ($dbg:expr, $($arg:tt)*) => {{
         $dbg.logln(format!($($arg)*))
     }};
 }
 
 #[macro_export]
 macro_rules! dlog {
-    ($dbg:ident, $($arg:tt)*) => {{
+    ($dbg:expr, $($arg:tt)*) => {{
         $dbg.log(format!($($arg)*))
     }};
 }
 
+#[derive(Clone)]
 /// A debug client wraps a bunch of COM interfaces and provides higher level
 /// features such as dumping registers, reading the GDT, reading virtual memory,
 /// etc.
 pub struct DebugClient {
-    control: IDebugControl3,
+    client: IDebugClient8,
+    control: IDebugControl4,
     registers: IDebugRegisters,
     dataspaces: IDebugDataSpaces4,
     symbols: IDebugSymbols3,
+    system: IDebugSystemObjects4,
 }
 
 impl DebugClient {
@@ -151,13 +144,26 @@ impl DebugClient {
         let registers = client.cast()?;
         let dataspaces = client.cast()?;
         let symbols = client.cast()?;
-
+        let system = client.cast()?;
+        let client = client.cast()?;        
+        
         Ok(Self {
+            client,
             control,
             registers,
             dataspaces,
             symbols,
+            system,
         })
+    }
+
+    /// Create a new instance of the debug client interface.
+    pub fn create() -> Result<Self> {
+        unsafe {
+            DebugCreate::<IUnknown>()
+                .map(|c| Self::new(&c).unwrap())
+                .map_err(|e| e.into())
+        }
     }
 
     /// Output a message `s`.
@@ -165,7 +171,7 @@ impl DebugClient {
     where
         Str: Into<Vec<u8>>,
     {
-        let cstr = CString::new(s.into())?;
+        let cstr = CString::new(s.into()).context("failed to convert output string")?;
         unsafe { self.control.Output(mask, cstr.as_pcstr()) }.context("Output failed")
     }
 
@@ -183,7 +189,6 @@ impl DebugClient {
     where
         Str: Into<Vec<u8>>,
     {
-        self.output(DEBUG_OUTPUT_NORMAL, "[dbgeng-rs] ")?;
         self.output(DEBUG_OUTPUT_NORMAL, args)?;
         self.output(DEBUG_OUTPUT_NORMAL, "\n")
     }
@@ -204,6 +209,72 @@ impl DebugClient {
         .with_context(|| format!("Execute({:?}) failed", cstr))
     }
 
+    /// Get up to N stack frames in the current debugger context.
+    pub fn context_stack_frames(&self, n: usize) -> Result<Vec<DEBUG_STACK_FRAME>> {
+        let mut stack = vec![DEBUG_STACK_FRAME::default(); n];
+        let mut frames_filled = 0;
+        unsafe {
+            self.control.GetContextStackTrace(
+                None,
+                0,
+                Some(&mut stack),
+                None,
+                0,
+                0,
+                Some(&mut frames_filled),
+            )
+        }
+        .context("GetContextStackTrace failed")?;
+
+        stack.resize(frames_filled.try_into()?, DEBUG_STACK_FRAME::default());
+
+        Ok(stack)
+    }
+
+    /// Setup an object to receive debugger event callbacks.
+    pub fn set_event_callbacks<E: EventCallbacks + 'static>(&self, e: E) -> Result<()> {
+        let callbacks = Box::new(e);
+        let callbacks: IUnknown = DbgEventCallbacks::new(self.clone(), callbacks).into();
+
+        unsafe {
+            self.client
+                .SetEventCallbacks(&callbacks.cast::<IDebugEventCallbacks>()?)
+        }
+        .context("SetEventCallbacks failed")
+    }
+
+    /// Create a new breakpoint.
+    pub fn add_breakpoint(
+        &self,
+        ty: BreakpointType,
+        desired_id: Option<u32>,
+    ) -> Result<DebugBreakpoint> {
+        let bp = unsafe {
+            self.control.AddBreakpoint(
+                match ty {
+                    BreakpointType::Code => DEBUG_BREAKPOINT_CODE,
+                    BreakpointType::Data => DEBUG_BREAKPOINT_DATA,
+                },
+                desired_id.unwrap_or(DEBUG_ANY_ID),
+            )
+        }
+        .context("AddBreakpoint failed")?;
+        DebugBreakpoint::new(bp)
+    }
+
+    /// Remove a previously created breakpoint.
+    pub fn remove_breakpoint(
+        &self,
+        bp: DebugBreakpoint
+    ) -> Result<()> {        
+        unsafe { 
+            let i: IUnknown = bp.0.into();
+            self.control.RemoveBreakpoint(&i.cast::<IDebugBreakpoint>().unwrap()) 
+            .context("RemoveBreakpoint failed")?;
+        };
+        Ok(())
+    }
+    
     /// Get the register indices from names.
     pub fn reg_indices(&self, names: &[&str]) -> Result<Vec<u32>> {
         let mut indices = Vec::with_capacity(names.len());
@@ -279,6 +350,21 @@ impl DebugClient {
         Ok(v[0])
     }
 
+    /// Set the value of a register identified by uts name
+    pub fn set_reg64(&self, name: &str, value: u64) -> Result<()> {
+        let indices = self.reg_indices(&[name])?; 
+        unsafe {                         
+            let mut debug_value = DEBUG_VALUE::default();          
+            debug_value.Anonymous.I64Parts32.HighPart = (value >> 32) as u32;
+            debug_value.Anonymous.I64Parts32.LowPart =  value as u32;
+            debug_value.Type = DEBUG_VALUE_INT64;           
+            self.registers.SetValue(indices[0], &debug_value)
+                .with_context(|| format!("SetValue failed for {name}"))?;
+        }
+
+        Ok(())
+    }
+
     /// Get the value of a specific MSR.
     pub fn msr(&self, msr: u32) -> Result<u64> {
         unsafe { self.dataspaces.ReadMsr(msr) }.context("ReadMsr failed")
@@ -341,6 +427,19 @@ impl DebugClient {
         ))
     }
 
+    /// Read virtual memory as a field.
+    pub fn read_virtual_struct<
+        T: zerocopy::AsBytes + zerocopy::FromBytes + zerocopy::FromZeroes,
+    >(
+        &self,
+        vaddr: u64,
+    ) -> Result<T> {
+        let mut buffer = T::new_zeroed();
+        self.read_virtual_exact(vaddr, buffer.as_bytes_mut())?;
+
+        Ok(buffer)
+    }
+
     /// Read an exact amount of virtual memory.
     pub fn read_virtual_exact(&self, vaddr: u64, buf: &mut [u8]) -> Result<()> {
         let amount_read = self.read_virtual(vaddr, buf)?;
@@ -369,6 +468,19 @@ impl DebugClient {
         .context("ReadVirtual failed")?;
 
         Ok(usize::try_from(amount_read)?)
+    }
+
+    /// Look up a module by name.
+    pub fn get_sym_module(&self, name: &str) -> Result<SymbolModule> {
+        let name_cstr = CString::new(name).context("failed to wrap module string")?;
+        let mut base = 0u64;
+        unsafe {
+            self.symbols
+                .GetModuleByModuleName(name_cstr.as_pcstr(), 0, None, Some(&mut base))
+        }
+        .context("GetModuleByModuleName failed")?;
+
+        Ok(SymbolModule::new(self.symbols.clone(), base))
     }
 
     /// Get the debuggee type.
@@ -405,7 +517,7 @@ impl DebugClient {
     }
 
     /// Read a NULL terminated string at `addr`.
-    pub fn read_cstring(&self, addr: u64) -> Result<String> {
+    pub fn read_cstring_virtual(&self, addr: u64) -> Result<String> {
         let maxbytes = 100;
         let mut buffer = vec![0; maxbytes];
         let mut length = 0;
@@ -428,150 +540,44 @@ impl DebugClient {
         Ok(String::from_utf8_lossy(&buffer).into_owned())
     }
 
-    /// Evaluate an expression as a u64.
-    pub fn eval64<Str>(&self, expr: Str) -> Result<u64>
-    where
-        Str: Into<Vec<u8>>,
-    {
-        let expr = CString::new(expr.into())?;
-        let mut val = DEBUG_VALUE::default();
+    pub fn read_wstring_virtual(&self, addr: u64) -> Result<String> {
+        let maxbytes = 100;
+        let mut buffer = vec![0; maxbytes];
+        let mut length = 0;
         unsafe {
-            self.control
-                .Evaluate(expr.as_pcstr(), DEBUG_VALUE_INT64, &mut val, None)
-        }?;
-
-        Ok(unsafe { val.Anonymous.Anonymous.I64 })
-    }
-
-    /// Add a synthetic module from a PE base.
-    pub fn add_synthetic_module<Str1, Str2>(
-        &self,
-        base_expr: Str1,
-        module_name: Str2,
-        module_path: PathBuf,
-    ) -> Result<()>
-    where
-        Str1: Into<Vec<u8>>,
-        Str2: Into<Vec<u8>>,
-    {
-        // Let's evaluate the expression and get the pointer..
-        let baseptr = self.eval64(base_expr)?;
-
-        // ..read the DOS header..
-        let dos_header = unsafe { self.read_type_virtual::<IMAGE_DOS_HEADER>(baseptr) }?;
-        if dos_header.e_magic != IMAGE_DOS_SIGNATURE {
-            bail!("Bad DOS header signature at {baseptr:#x}");
-        }
-
-        // ..we can use `IMAGE_NT_HEADERS32` because `SizeOfImage` is at the same offset
-        // for 32/64 bit
-        let Some(nt_header_addr) = baseptr.checked_add(dos_header.e_lfanew as u64) else {
-            bail!("Overflow when calculating NT header base address");
-        };
-
-        let nt_headers = unsafe { self.read_type_virtual::<IMAGE_NT_HEADERS32>(nt_header_addr) }?;
-        if nt_headers.Signature != IMAGE_NT_SIGNATURE {
-            bail!("Bad NT header signature at {nt_header_addr:#x}")
-        }
-
-        let image_size = nt_headers.OptionalHeader.SizeOfImage;
-        let imagepath = CString::new(
-            module_path
-                .canonicalize()?
-                .to_str()
-                .context("Path is not valid")?,
-        )?;
-        let modulename = CString::new(module_name)?;
-        let moduleimage = CString::new(
-            module_path
-                .file_name()
-                .and_then(OsStr::to_str)
-                .context("No filename present")?,
-        )?;
-
-        unsafe {
-            self.symbols.AddSyntheticModule(
-                baseptr,
-                image_size,
-                imagepath.as_pcstr(),
-                modulename.as_pcstr(),
-                DEBUG_ADDSYNTHMOD_DEFAULT,
+            self.dataspaces.ReadUnicodeStringVirtual(
+                addr,
+                maxbytes as u32,
+                65001, // CP_UTF8
+                Some(&mut buffer),
+                Some(&mut length),
             )
-        }?;
+        }
+        .context("ReadUnicodeStringVirtual failed")?;
 
-        // Reload symbols for the new module, must do it w/ full DLL name
-        unsafe { self.symbols.Reload(moduleimage.as_pcstr()) }
-            .context("failed to reload after adding syn module")
-    }
-
-    /// Remove a synthetic module by base address.
-    pub fn remove_synthetic_module(&self, base: u64) -> Result<()> {
-        unsafe { self.symbols.RemoveSyntheticModule(base) }.context("failed to remove syn module")
-    }
-
-    /// Remove a synthetic module by name.
-    pub fn remove_synthetic_module_by_name<Str>(&self, name: Str) -> Result<()>
-    where
-        Str: Into<Vec<u8>>,
-    {
-        let mut base = 0u64;
-        let name = CString::new(name)?;
-        unsafe {
-            self.symbols
-                .GetModuleByModuleName(name.as_pcstr(), 0, None, Some(&mut base))
-        }?;
-
-        self.remove_synthetic_module(base)
-    }
-
-    /// Read a sized type from debugger memory.
-    ///
-    /// # Safety
-    ///
-    /// Caller needs to make sure the type is valid.
-    pub unsafe fn read_type_virtual<T>(&self, vaddr: u64) -> Result<T> {
-        let mut ty = MaybeUninit::<T>::uninit();
-        let mut nread = 0u32;
-        let typesz = size_of::<T>();
-
-        self.dataspaces.ReadVirtual(
-            vaddr,
-            ty.as_mut_ptr() as _,
-            typesz as u32,
-            Some(&mut nread),
-        )?;
-
-        if nread as usize != typesz {
-            bail!("Invalid length read for type");
+        if length == 0 {
+            bail!("length is zero")
         }
 
-        Ok(ty.assume_init())
+        let length = length as usize;
+        buffer.resize(length - 1, 0);
+
+        Ok(String::from_utf8_lossy(&buffer).into_owned())
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::Seg;
+    pub fn get_current_process_id(&self) -> Result<u32> {
+        let process_id = unsafe {
+            self.system.GetCurrentProcessSystemId()
+        }
+        .context("GetCurrentProcessId failed")?;
+        Ok(process_id)
+    }
 
-    #[test]
-    fn gdt() {
-        // 32-bit compatibility mode for Windows x64.
-        let s = Seg::from_descriptor(0x23, 0xcffb00_0000ffff);
-        assert_eq!(s.end_addr(), 0xffffffff);
-
-        // Regular code segment for Windows x64.
-        let s = Seg::from_descriptor(0x33, 0x20fb00_00000000);
-        assert_eq!(s.base, 0);
-        assert_eq!(s.end_addr(), 0);
-
-        // TSS64 segment.
-        let s = Seg::from_descriptor(0x40, 0xfffff805_3f008b16_90000067);
-        assert_eq!(s.base, 0xfffff805_3f169000);
-        assert_eq!(s.end_addr(), 0xfffff805_3f169067);
-
-        // TEB32 of a WOW64 process.
-        let s = Seg::from_descriptor(0x53, 0x740f33a_30003c00);
-        assert_eq!(s.base, 0x73a3000);
-        assert_eq!(s.end_addr(), 0x73a6c00);
+    pub fn get_current_thread_id(&self) -> Result<u32> {
+        let thread_id = unsafe {
+            self.system.GetCurrentThreadSystemId()
+        }
+        .context("GetCurrentThreadId failed")?;
+        Ok(thread_id)
     }
 }
